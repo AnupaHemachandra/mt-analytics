@@ -1,4 +1,4 @@
-name: mt-analytics build and integration check.
+name: Spring Boot Maven Build and Integration Check
 
 on:
   push:
