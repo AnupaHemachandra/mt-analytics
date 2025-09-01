@@ -1,4 +1,4 @@
-name: Spring Boot Build and Integration Check
+name: mt-analytics build and integration check.
 
 on:
   push:
@@ -16,27 +16,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Ensure gradlew executable
-        run: chmod +x ./gradlew
-
       - name: Set up JDK 21
         uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Cache Gradle packages
+      - name: Cache Maven packages
         uses: actions/cache@v3
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
-            ${{ runner.os }}-gradle
+            ${{ runner.os }}-maven
 
-      - name: Build with Gradle
-        run: ./gradlew build --no-daemon
+      - name: Build with Maven
+        run: mvn clean install -DskipTests
 
       - name: Run integration tests
-        run: ./gradlew integrationTest --no-daemon
+        run: mvn verify
