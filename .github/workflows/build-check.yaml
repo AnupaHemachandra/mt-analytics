@@ -1,60 +1,77 @@
-name: Spring Boot Maven Build and Integration Check
+name: Spring Boot Maven Build, Test, Docker Push & Deploy
 
 on:
   push:
-    branches:
-      - dev
+    branches: [ dev ]
   pull_request:
-    branches:
-      - dev
+    branches: [ dev ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     env:
       DB_URL: ${{ secrets.DB_URL }}
       DB_USERNAME: ${{ secrets.DB_USERNAME }}
       DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      IMAGE_NAME: anupa776/mt-analytics
+      IMAGE_TAG: ${{ github.sha }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '21'
 
       - name: Cache Maven packages
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-maven
+          restore-keys: ${{ runner.os }}-maven
 
-      - name: Build with Maven
-        run: mvn clean install -DskipTests
+      - name: Build with Maven (skip unit tests here)
+        run: mvn -B clean install -DskipTests
 
       - name: Run integration tests
-        run: mvn verify
+        run: mvn -B verify
 
-      # Docker build and push
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v2
+      # ---- Docker build & push to Docker Hub ----
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-      - name: Build Docker image
-        run: docker build -f .dockerfile -t ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_APP_NAME }}:${{ github.sha }} .
-      - name: Push Docker image to Docker Hub
-        run: docker push ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_APP_NAME }}:${{ github.sha }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}   # e.g., anupa776
+          password: ${{ secrets.DOCKERHUB_TOKEN }}      # Docker Hub Access Token
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # If your file is named "Dockerfile", remove the next line.
+          # If your file is actually ".dockerfile", keep it.
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            DB_URL=${{ secrets.DB_URL }}
+            DB_USERNAME=${{ secrets.DB_USERNAME }}
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
 
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    env:
+      IMAGE_NAME: anupa776/mt-analytics
+      IMAGE_TAG: ${{ github.sha }}
+
     steps:
       - name: SSH and deploy on AWS EC2 using .pem key
         uses: appleboy/ssh-action@v0.1.8
@@ -63,7 +80,17 @@ jobs:
           username: ${{ secrets.EC2_SSH_USER }}
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           script: |
-            docker pull ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_APP_NAME }}:${{ github.sha }}
-            docker stop your-app || true
-            docker rm your-app || true
-            docker run -d --name your-app -p 8080:8080 ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_APP_NAME }}:${{ github.sha }}
+            # Log in on the EC2 box because the Docker Hub repo is private
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            docker pull ${IMAGE_NAME}:${IMAGE_TAG} || (echo "Pull failed" && exit 1)
+
+            docker stop mt-analytics || true
+            docker rm mt-analytics || true
+
+            docker run -d --name mt-analytics --restart unless-stopped \
+              -p 8080:8080 \
+              -e DB_URL='${{ secrets.DB_URL }}' \
+              -e DB_USERNAME='${{ secrets.DB_USERNAME }}' \
+              -e DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
+              ${IMAGE_NAME}:${IMAGE_TAG}
